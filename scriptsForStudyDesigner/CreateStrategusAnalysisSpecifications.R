@@ -53,11 +53,11 @@ timeAtRisks <- tibble::tribble(
   ~label,         ~riskWindowStart, ~startAnchor,   ~riskWindowEnd, ~endAnchor,
   "On treatment", 1,                "cohort start", 0,              "cohort end"
 )
-# Try to avoid intent-to-treat TARs for SCCS, or then at least disable calendar time spline:
-sccsTimeAtRisks <- tibble::tribble(
-  ~label,         ~riskWindowStart, ~startAnchor,   ~riskWindowEnd, ~endAnchor,
-  "On treatment", 1,                "cohort start", 0,              "cohort end"
-)
+# # Try to avoid intent-to-treat TARs for SCCS, or then at least disable calendar time spline:
+# sccsTimeAtRisks <- tibble::tribble(
+#   ~label,         ~riskWindowStart, ~startAnchor,   ~riskWindowEnd, ~endAnchor,
+#   "On treatment", 1,                "cohort start", 0,              "cohort end"
+# )
 # Try to use fixed-time TARs for patient-level prediction:
 plpTimeAtRisks <- tibble::tribble(
   ~riskWindowStart, ~startAnchor,   ~riskWindowEnd, ~endAnchor,
@@ -492,189 +492,189 @@ cohortMethodModuleSpecifications <- cmModuleSettingsCreator$createModuleSpecific
   cmAnalysesSpecifications = cmAnalysesSpecifications$toList()
 )
 
-
-## SelfControlledCaseSeriesModule settings -----------------------------------------------
-sccsModuleSettingsCreator <- SelfControlledCaseSeriesModule$new()
-uniqueTargetIndicationsDemo <- lapply(tcis,
-                                      function(x) data.frame(
-                                        exposureId = c(x$targetId, x$comparatorId),
-                                        nestingCohortId = if (is.null(x$indicationId)) NA else x$indicationId,
-                                        genderConceptIds = paste(x$genderConceptIds, collapse = ","),
-                                        minAge = if (is.null(x$minAge)) NA else x$minAge,
-                                        maxAge = if (is.null(x$maxAge)) NA else x$maxAge
-                                      )) |>
-  dplyr::bind_rows() |>
-  dplyr::distinct()
-
-targetInds <- uniqueTargetIndicationsDemo %>%
-  dplyr::select("exposureId", "nestingCohortId") %>%
-  dplyr::distinct() 
-
-sccsDemoIds <- uniqueTargetIndicationsDemo %>%
-  dplyr::select("genderConceptIds", "minAge", "maxAge") %>% 
-  dplyr::distinct() %>%
-  dplyr::mutate(analysisId = dplyr::row_number())
-
-# add the rowIds as we will use this for the excludes
-# as SCCS wants to do cartesian of targetInd and demo
-uniqueTargetIndicationsDemo <- uniqueTargetIndicationsDemo %>%
-  dplyr::inner_join(
-    y = sccsDemoIds,
-    by = c("genderConceptIds", "minAge", "maxAge")
-  ) 
-
-
-# now do the target/ind based on the targetInds
-eoList <- list()
-for (i in seq_len(nrow(targetInds))) {
-  targetIndication <- targetInds[i, ]
-  currentIndicationId <- NULL
-  if (!is.na(targetIndication$nestingCohortId)) {
-    currentIndicationId <- targetIndication$nestingCohortId
-  }
-  
-  # Specify the indication/outcome pairs for the current exposure
-  for (outcomeId in unique(outcomes$cohortId)) {
-    eoList[[length(eoList) + 1]] <- SelfControlledCaseSeries::createExposuresOutcome(
-      outcomeId = outcomeId,
-      nestingCohortId = currentIndicationId,
-      exposures = list(
-        SelfControlledCaseSeries::createExposure(
-          exposureId = targetIndication$exposureId,
-          trueEffectSize = NA
-        )
-      )
-    )
-  }
-  
-  # Specify the indication/negative control outcome pairs for the current exposure
-  for (outcomeId in negativeControlOutcomeCohortSet$cohortId) {
-    eoList[[length(eoList) + 1]] <- SelfControlledCaseSeries::createExposuresOutcome(
-      outcomeId = outcomeId,
-      nestingCohortId = currentIndicationId,
-      exposures = list(SelfControlledCaseSeries::createExposure(
-        exposureId = targetIndication$exposureId, 
-        trueEffectSize = 1
-      ))
-    )
-  }
-  
-}
-
-# now do the analyses based on the demos
-sccsAnalysisList <- list()
-for (i in seq_len(nrow(sccsDemoIds))) {
-  demo <- sccsDemoIds[i, ]
-  
-  getDbSccsDataArgs <- SelfControlledCaseSeries::createGetDbSccsDataArgs(
-    maxCasesPerOutcome = sccsMaxCasesPerOutcome,
-    studyStartDates = if (studyStartDate == "") NULL else studyStartDate,
-    studyEndDates = if (studyEndDate == "") NULL else studyEndDate,
-    deleteCovariatesSmallCount = 0
-  )
-  createStudyPopulationArgs = SelfControlledCaseSeries::createCreateStudyPopulationArgs(
-    firstOutcomeOnly = TRUE,
-    naivePeriod = 365,
-    minAge = if (is.na(demo$minAge)) NULL else demo$minAge,
-    maxAge = if (is.na(demo$maxAge)) NULL else demo$maxAge
-  )
-  covarPreExp <- SelfControlledCaseSeries::createEraCovariateSettings(
-    label = "Pre-exposure",
-    includeEraIds = "exposureId",
-    start = -30,
-    startAnchor = "era start",
-    end = -1,
-    endAnchor = "era start",
-    firstOccurrenceOnly = FALSE,
-    allowRegularization = FALSE,
-    profileLikelihood = FALSE,
-    exposureOfInterest = FALSE
-  )
-  calendarTimeSettings <- SelfControlledCaseSeries::createCalendarTimeCovariateSettings(
-    calendarTimeKnots = 5,
-    allowRegularization = TRUE,
-    computeConfidenceIntervals = FALSE
-  )
-  seasonalitySettings <- SelfControlledCaseSeries::createSeasonalityCovariateSettings(
-    seasonKnots = 5,
-    allowRegularization = TRUE,
-    computeConfidenceIntervals = FALSE
-  )
-  # Use grid with gradients likelihood approximation:
-  fitSccsModelArgs <- SelfControlledCaseSeries::createFitSccsModelArgs(
-    profileGrid = seq(log(0.1), log(10), length.out = 8),
-    profileBounds = NULL
-  )
-  for (j in seq_len(nrow(sccsTimeAtRisks))) {
-    covarExposureOfInt <- SelfControlledCaseSeries::createEraCovariateSettings(
-      label = "Main",
-      includeEraIds = "exposureId",
-      start = sccsTimeAtRisks$riskWindowStart[j],
-      startAnchor = gsub("cohort", "era", sccsTimeAtRisks$startAnchor[j]),
-      end = sccsTimeAtRisks$riskWindowEnd[j],
-      endAnchor = gsub("cohort", "era", sccsTimeAtRisks$endAnchor[j]),
-      firstOccurrenceOnly = FALSE,
-      allowRegularization = FALSE,
-      profileLikelihood = TRUE,
-      exposureOfInterest = TRUE
-    )
-    createSccsIntervalDataArgs <- SelfControlledCaseSeries::createCreateSccsIntervalDataArgs(
-      eraCovariateSettings = list(covarPreExp, covarExposureOfInt),
-      seasonalityCovariateSettings = seasonalitySettings,
-      calendarTimeCovariateSettings = calendarTimeSettings
-    )
-    description <- "SCCS"
-    if (demo$genderConceptIds == "8507") {
-      description <- sprintf("%s, male", description)
-    } else if (demo$genderConceptIds == "8532") {
-      description <- sprintf("%s, female", description)
-    }
-    if (!is.na(demo$minAge) || !is.na(demo$maxAge)) {
-      description <- sprintf("%s, age %s-%s",
-                             description,
-                             if(is.na(demo$minAge)) "" else demo$minAge,
-                             if(is.na(demo$maxAge)) "" else demo$maxAge)
-    }
-    description <- sprintf("%s, %s", description, sccsTimeAtRisks$label[j])
-    sccsAnalysisList[[length(sccsAnalysisList) + 1]] <- SelfControlledCaseSeries::createSccsAnalysis(
-      analysisId = length(sccsAnalysisList) + 1,
-      description = description,
-      getDbSccsDataArgs = getDbSccsDataArgs,
-      createStudyPopulationArgs = createStudyPopulationArgs,
-      createIntervalDataArgs = createSccsIntervalDataArgs,
-      fitSccsModelArgs = fitSccsModelArgs
-    )
-  }
-}
-
-# now figure out what to exclude
-includeSccs <- uniqueTargetIndicationsDemo %>% 
-  dplyr::select("exposureId","nestingCohortId", "analysisId") %>%
-  dplyr::distinct()
-
-# remove the included from all combinations to get the combinations you dont want
-analysesToExclude <- expand.grid(
-  exposureId = unique(uniqueTargetIndicationsDemo$exposureId),
-  analysisId = unique(uniqueTargetIndicationsDemo$analysisId),
-  nestingCohortId = unique(uniqueTargetIndicationsDemo$nestingCohortId)
-) |>
-  dplyr::anti_join(includeSccs, by = dplyr::join_by(exposureId, analysisId,nestingCohortId))
-
-if (nrow(analysesToExclude) == 0) {
-  analysesToExclude <- NULL  
-}
-
-sccsAnalysesSpecifications <- SelfControlledCaseSeries::createSccsAnalysesSpecifications(
-  sccsAnalysisList = sccsAnalysisList,
-  exposuresOutcomeList = eoList,
-  analysesToExclude = analysesToExclude,
-  combineDataFetchAcrossOutcomes = FALSE,
-  sccsDiagnosticThresholds = SelfControlledCaseSeries::createSccsDiagnosticThresholds()
-)
-
-selfControlledModuleSpecifications <- sccsModuleSettingsCreator$createModuleSpecifications(
-  sccsAnalysesSpecifications = sccsAnalysesSpecifications$toList()
-)
+# 
+# ## SelfControlledCaseSeriesModule settings -----------------------------------------------
+# sccsModuleSettingsCreator <- SelfControlledCaseSeriesModule$new()
+# uniqueTargetIndicationsDemo <- lapply(tcis,
+#                                       function(x) data.frame(
+#                                         exposureId = c(x$targetId, x$comparatorId),
+#                                         nestingCohortId = if (is.null(x$indicationId)) NA else x$indicationId,
+#                                         genderConceptIds = paste(x$genderConceptIds, collapse = ","),
+#                                         minAge = if (is.null(x$minAge)) NA else x$minAge,
+#                                         maxAge = if (is.null(x$maxAge)) NA else x$maxAge
+#                                       )) |>
+#   dplyr::bind_rows() |>
+#   dplyr::distinct()
+# 
+# targetInds <- uniqueTargetIndicationsDemo %>%
+#   dplyr::select("exposureId", "nestingCohortId") %>%
+#   dplyr::distinct() 
+# 
+# sccsDemoIds <- uniqueTargetIndicationsDemo %>%
+#   dplyr::select("genderConceptIds", "minAge", "maxAge") %>% 
+#   dplyr::distinct() %>%
+#   dplyr::mutate(analysisId = dplyr::row_number())
+# 
+# # add the rowIds as we will use this for the excludes
+# # as SCCS wants to do cartesian of targetInd and demo
+# uniqueTargetIndicationsDemo <- uniqueTargetIndicationsDemo %>%
+#   dplyr::inner_join(
+#     y = sccsDemoIds,
+#     by = c("genderConceptIds", "minAge", "maxAge")
+#   ) 
+# 
+# 
+# # now do the target/ind based on the targetInds
+# eoList <- list()
+# for (i in seq_len(nrow(targetInds))) {
+#   targetIndication <- targetInds[i, ]
+#   currentIndicationId <- NULL
+#   if (!is.na(targetIndication$nestingCohortId)) {
+#     currentIndicationId <- targetIndication$nestingCohortId
+#   }
+#   
+#   # Specify the indication/outcome pairs for the current exposure
+#   for (outcomeId in unique(outcomes$cohortId)) {
+#     eoList[[length(eoList) + 1]] <- SelfControlledCaseSeries::createExposuresOutcome(
+#       outcomeId = outcomeId,
+#       nestingCohortId = currentIndicationId,
+#       exposures = list(
+#         SelfControlledCaseSeries::createExposure(
+#           exposureId = targetIndication$exposureId,
+#           trueEffectSize = NA
+#         )
+#       )
+#     )
+#   }
+#   
+#   # Specify the indication/negative control outcome pairs for the current exposure
+#   for (outcomeId in negativeControlOutcomeCohortSet$cohortId) {
+#     eoList[[length(eoList) + 1]] <- SelfControlledCaseSeries::createExposuresOutcome(
+#       outcomeId = outcomeId,
+#       nestingCohortId = currentIndicationId,
+#       exposures = list(SelfControlledCaseSeries::createExposure(
+#         exposureId = targetIndication$exposureId, 
+#         trueEffectSize = 1
+#       ))
+#     )
+#   }
+#   
+# }
+# 
+# # now do the analyses based on the demos
+# sccsAnalysisList <- list()
+# for (i in seq_len(nrow(sccsDemoIds))) {
+#   demo <- sccsDemoIds[i, ]
+#   
+#   getDbSccsDataArgs <- SelfControlledCaseSeries::createGetDbSccsDataArgs(
+#     maxCasesPerOutcome = sccsMaxCasesPerOutcome,
+#     studyStartDates = if (studyStartDate == "") NULL else studyStartDate,
+#     studyEndDates = if (studyEndDate == "") NULL else studyEndDate,
+#     deleteCovariatesSmallCount = 0
+#   )
+#   createStudyPopulationArgs = SelfControlledCaseSeries::createCreateStudyPopulationArgs(
+#     firstOutcomeOnly = TRUE,
+#     naivePeriod = 365,
+#     minAge = if (is.na(demo$minAge)) NULL else demo$minAge,
+#     maxAge = if (is.na(demo$maxAge)) NULL else demo$maxAge
+#   )
+#   covarPreExp <- SelfControlledCaseSeries::createEraCovariateSettings(
+#     label = "Pre-exposure",
+#     includeEraIds = "exposureId",
+#     start = -30,
+#     startAnchor = "era start",
+#     end = -1,
+#     endAnchor = "era start",
+#     firstOccurrenceOnly = FALSE,
+#     allowRegularization = FALSE,
+#     profileLikelihood = FALSE,
+#     exposureOfInterest = FALSE
+#   )
+#   calendarTimeSettings <- SelfControlledCaseSeries::createCalendarTimeCovariateSettings(
+#     calendarTimeKnots = 5,
+#     allowRegularization = TRUE,
+#     computeConfidenceIntervals = FALSE
+#   )
+#   seasonalitySettings <- SelfControlledCaseSeries::createSeasonalityCovariateSettings(
+#     seasonKnots = 5,
+#     allowRegularization = TRUE,
+#     computeConfidenceIntervals = FALSE
+#   )
+#   # Use grid with gradients likelihood approximation:
+#   fitSccsModelArgs <- SelfControlledCaseSeries::createFitSccsModelArgs(
+#     profileGrid = seq(log(0.1), log(10), length.out = 8),
+#     profileBounds = NULL
+#   )
+#   for (j in seq_len(nrow(sccsTimeAtRisks))) {
+#     covarExposureOfInt <- SelfControlledCaseSeries::createEraCovariateSettings(
+#       label = "Main",
+#       includeEraIds = "exposureId",
+#       start = sccsTimeAtRisks$riskWindowStart[j],
+#       startAnchor = gsub("cohort", "era", sccsTimeAtRisks$startAnchor[j]),
+#       end = sccsTimeAtRisks$riskWindowEnd[j],
+#       endAnchor = gsub("cohort", "era", sccsTimeAtRisks$endAnchor[j]),
+#       firstOccurrenceOnly = FALSE,
+#       allowRegularization = FALSE,
+#       profileLikelihood = TRUE,
+#       exposureOfInterest = TRUE
+#     )
+#     createSccsIntervalDataArgs <- SelfControlledCaseSeries::createCreateSccsIntervalDataArgs(
+#       eraCovariateSettings = list(covarPreExp, covarExposureOfInt),
+#       seasonalityCovariateSettings = seasonalitySettings,
+#       calendarTimeCovariateSettings = calendarTimeSettings
+#     )
+#     description <- "SCCS"
+#     if (demo$genderConceptIds == "8507") {
+#       description <- sprintf("%s, male", description)
+#     } else if (demo$genderConceptIds == "8532") {
+#       description <- sprintf("%s, female", description)
+#     }
+#     if (!is.na(demo$minAge) || !is.na(demo$maxAge)) {
+#       description <- sprintf("%s, age %s-%s",
+#                              description,
+#                              if(is.na(demo$minAge)) "" else demo$minAge,
+#                              if(is.na(demo$maxAge)) "" else demo$maxAge)
+#     }
+#     description <- sprintf("%s, %s", description, sccsTimeAtRisks$label[j])
+#     sccsAnalysisList[[length(sccsAnalysisList) + 1]] <- SelfControlledCaseSeries::createSccsAnalysis(
+#       analysisId = length(sccsAnalysisList) + 1,
+#       description = description,
+#       getDbSccsDataArgs = getDbSccsDataArgs,
+#       createStudyPopulationArgs = createStudyPopulationArgs,
+#       createIntervalDataArgs = createSccsIntervalDataArgs,
+#       fitSccsModelArgs = fitSccsModelArgs
+#     )
+#   }
+# }
+# 
+# # now figure out what to exclude
+# includeSccs <- uniqueTargetIndicationsDemo %>% 
+#   dplyr::select("exposureId","nestingCohortId", "analysisId") %>%
+#   dplyr::distinct()
+# 
+# # remove the included from all combinations to get the combinations you dont want
+# analysesToExclude <- expand.grid(
+#   exposureId = unique(uniqueTargetIndicationsDemo$exposureId),
+#   analysisId = unique(uniqueTargetIndicationsDemo$analysisId),
+#   nestingCohortId = unique(uniqueTargetIndicationsDemo$nestingCohortId)
+# ) |>
+#   dplyr::anti_join(includeSccs, by = dplyr::join_by(exposureId, analysisId,nestingCohortId))
+# 
+# if (nrow(analysesToExclude) == 0) {
+#   analysesToExclude <- NULL  
+# }
+# 
+# sccsAnalysesSpecifications <- SelfControlledCaseSeries::createSccsAnalysesSpecifications(
+#   sccsAnalysisList = sccsAnalysisList,
+#   exposuresOutcomeList = eoList,
+#   analysesToExclude = analysesToExclude,
+#   combineDataFetchAcrossOutcomes = FALSE,
+#   sccsDiagnosticThresholds = SelfControlledCaseSeries::createSccsDiagnosticThresholds()
+# )
+# 
+# selfControlledModuleSpecifications <- sccsModuleSettingsCreator$createModuleSpecifications(
+#   sccsAnalysesSpecifications = sccsAnalysesSpecifications$toList()
+# )
 
 # PatientLevelPredictionModule Settings -------------------------------------------------
 plpModuleSettingsCreator <- PatientLevelPredictionModule$new()
@@ -742,7 +742,7 @@ moduleSpecsList <- list(
   characterizationModuleSpecifications,
   cohortIncidenceModuleSpecifications,
   cohortMethodModuleSpecifications,
-  selfControlledModuleSpecifications,
+  # selfControlledModuleSpecifications,
   patientLevelPredictionModuleSpecifications
 )
 
